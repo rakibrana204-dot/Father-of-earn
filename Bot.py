@@ -14,7 +14,6 @@ def home():
     return "বট সফলভাবে ২৪ ঘণ্টা সচল আছে!"
 
 def run_web_server():
-    # পোর্ট ৮MD বা ১০০০০ এ সার্ভার রান হবে যা ফ্রি হোস্টিং সাপোর্ট করে
     app.run(host='0.0.0.0', port=8080)
 
 # বটের আসল টোকেন
@@ -31,10 +30,39 @@ GMAIL_PASSWORD_REQUIRED = "@rakib2041"
 CHANNEL_LINK = "https://t.me/freeincomesite204"
 MIN_WITHDRAW = 80.00
 
+# মেইন মেনু কিবোর্ড জেনারেটর ফাংশন
+def get_main_menu_markup(user_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_home = types.KeyboardButton("🏠 Home")
+    btn_task = types.KeyboardButton("🎁 Daily Task")
+    btn_wallet = types.KeyboardButton("💼 Wallet")
+    btn_team = types.KeyboardButton("👥 Team")
+    btn_profile = types.KeyboardButton("👤 Profile")
+    markup.row(btn_home, btn_task)
+    markup.row(btn_wallet, btn_team, btn_profile)
+    
+    if user_id == ADMIN_ID:
+        btn_admin = types.KeyboardButton("⚙️ Admin Panel")
+        markup.row(btn_admin)
+    return markup
+
+# ক্যানসেল কিবোর্ড জেনারেটর ফাংশন
+def get_cancel_markup():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton("❌ Cancel"))
+    return markup
+
+# ইনপুট ভ্যালিডেশন চেকার ফাংশন
+def is_invalid_input(text):
+    main_buttons = ["🏠 Home", "🎁 Daily Task", "💼 Wallet", "👥 Team", "👤 Profile", "⚙️ Admin Panel", "❌ Cancel"]
+    if text in main_buttons:
+        return True
+    return False
+
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
-    # ইউজার টেবিল (পুরনো ডেটা সম্পূর্ণ সুরক্ষিত থাকবে)
+    # ইউজার টেবিল (টার্গেট বোনাসের জন্য ৩টি নতুন কলামসহ আপডেট করা হয়েছে)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -42,9 +70,24 @@ def init_db():
             balance REAL,
             status TEXT,
             referred_by INTEGER,
-            last_daily_task TEXT
+            last_daily_task TEXT,
+            target_start_date TEXT,
+            target_ref_count INTEGER DEFAULT 0,
+            target_claimed INTEGER DEFAULT 0
         )
     ''')
+    
+    # যদি আগের ডেটাবেজ থাকে, তবে নতুন কলামগুলো ম্যানুয়ালি অ্যাড করার চেষ্টা করবে (ক্র্যাশ এড়াতে)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN target_start_date TEXT")
+    except sqlite3.OperationalError: pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN target_ref_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError: pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN target_claimed INTEGER DEFAULT 0")
+    except sqlite3.OperationalError: pass
+
     # জিমেইল ট্র্যাকিং টেবিল
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS gmail_orders (
@@ -59,6 +102,53 @@ def init_db():
     conn.close()
 
 init_db()
+
+# ইউজারের ৩ দিনের টার্গেট টাইম ও কাউন্ট চেক এবং রিসেট করার ফাংশন
+def check_and_update_target(user_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT target_start_date, target_ref_count, target_claimed FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    
+    today = datetime.date.today()
+    
+    if res is None:
+        conn.close()
+        return None
+        
+    start_date_str, ref_count, claimed = res[0], res[1], res[2]
+    
+    # যদি শুরু করার কোনো ডেট না থাকে (নতুন ইউজার)
+    if not start_date_str:
+        cursor.execute("UPDATE users SET target_start_date = ?, target_ref_count = 0, target_claimed = ? WHERE user_id = ?", (today.strftime("%Y-%m-%d"), 0, user_id))
+        conn.commit()
+        start_date = today
+        ref_count = 0
+        claimed = 0
+    else:
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        
+    # ৩ দিন পার হয়ে গেছে কি না চেক
+    days_passed = (today - start_date).days
+    
+    if days_passed >= 3:
+        # ৩ দিন পার হলে সব রিসেট হয়ে আবার নতুন ৩ দিন শুরু হবে
+        cursor.execute("UPDATE users SET target_start_date = ?, target_ref_count = 0, target_claimed = 0 WHERE user_id = ?", (today.strftime("%Y-%m-%d"), user_id))
+        conn.commit()
+        start_date = today
+        ref_count = 0
+        claimed = 0
+        days_passed = 0
+        
+    conn.close()
+    
+    remaining_days = 3 - days_passed
+    return {
+        "start_date": start_date,
+        "ref_count": ref_count,
+        "claimed": claimed,
+        "remaining_days": remaining_days
+    }
 
 def get_bot_age():
     now = datetime.datetime.now()
@@ -89,12 +179,14 @@ def start_command(message):
     cursor.execute("SELECT balance, status FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
     
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    
     if user is None:
         initial_balance = 20.00
         status = "Active" if user_id == ADMIN_ID else "Pending"
         
-        cursor.execute("INSERT INTO users (user_id, name, balance, status, referred_by, last_daily_task) VALUES (?, ?, ?, ?, ?, ?)",
-                       (user_id, username, initial_balance, status, referred_by, ""))
+        cursor.execute("INSERT INTO users (user_id, name, balance, status, referred_by, last_daily_task, target_start_date, target_ref_count, target_claimed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (user_id, username, initial_balance, status, referred_by, "", today_str, 0, 0))
         conn.commit()
         
         if referred_by:
@@ -118,19 +210,7 @@ def start_command(message):
         
     conn.close()
     
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_home = types.KeyboardButton("🏠 Home")
-    btn_task = types.KeyboardButton("🎁 Daily Task")
-    btn_wallet = types.KeyboardButton("💼 Wallet")
-    btn_team = types.KeyboardButton("👥 Team")
-    btn_profile = types.KeyboardButton("👤 Profile")
-    markup.row(btn_home, btn_task)
-    markup.row(btn_wallet, btn_team, btn_profile)
-    
-    if user_id == ADMIN_ID:
-        btn_admin = types.KeyboardButton("⚙️ Admin Panel")
-        markup.row(btn_admin)
-    
+    markup = get_main_menu_markup(user_id)
     status_icon = "❌ Inactive" if current_status == "Pending" else "✅ Active"
     
     welcome_msg = (
@@ -199,15 +279,24 @@ def handle_menu(message):
             bot.send_message(user_id, "🚀 **আমাদের প্রজেক্ট সমূহ:**\nনিচের যেকোনো একটি প্রজেক্টে ক্লিক করে কাজ শুরু করুন।", parse_mode="Markdown", reply_markup=markup)
         
     elif message.text == "🎁 Daily Task":
+        # প্রথমে ইউজারের টার্গেট ডেটা আপডেট ও চেক করা হবে
+        t_data = check_and_update_target(user_id)
+        
         today_str = datetime.date.today().strftime("%Y-%m-%d")
+        
+        markup = types.InlineKeyboardMarkup()
+        btn_channel = types.InlineKeyboardButton("📢 চ্যানেলে জয়েন করুন", url=CHANNEL_LINK)
+        btn_claim = types.InlineKeyboardButton("💰 বোনাস ক্লেইম করুন (৳৩)", callback_data="claim_daily")
+        markup.row(btn_channel)
+        markup.row(btn_claim)
+        
+        # [NEW] টার্গেট বোনাস বাটন যোগ করা
+        btn_target = types.InlineKeyboardButton("🎯 টার্গেট বোনাস (৳২০ চ্যালেঞ্জ)", callback_data="view_target_bonus")
+        markup.row(btn_target)
+        
         if last_daily == today_str:
-            bot.send_message(user_id, "❌ **আপনি আজকে অলরেডি টাস্কটি সম্পন্ন করেছেন!**\nআগামীকাল আবার চেষ্টা করুন।")
+            bot.send_message(user_id, "🎁 **ডেইলি টাস্ক মেনু**\n\nআজকের ডেইলি ৩ টাকা বোনাস নেওয়া শেষ। নিচের বাটন থেকে **টার্গেট বোনাস** চ্যালেঞ্জ দেখতে পারেন।", reply_markup=markup)
         else:
-            markup = types.InlineKeyboardMarkup()
-            btn_channel = types.InlineKeyboardButton("📢 চ্যানেলে জয়েন করুন", url=CHANNEL_LINK)
-            btn_claim = types.InlineKeyboardButton("💰 বোনাস ক্লেইম করুন (৳৩)", callback_data="claim_daily")
-            markup.row(btn_channel)
-            markup.row(btn_claim)
             bot.send_message(user_id, f"🎁 **ডেইলি টাস্ক:**\n\nনিচের চ্যানেলে জয়েন করুন এবং 'বোনাস ক্লেইম করুন' বাটনে চাপ দিয়ে ৩ টাকা বোনাস বুঝে নিন।", reply_markup=markup)
 
     elif message.text == "💼 Wallet":
@@ -234,11 +323,11 @@ def callback_query(call):
     if call.data == "activate_account":
         instructions = (
             f"💰 **অ্যাকাউন্ট অ্যাক্টিভেশন নিয়ম:**\n\n"
-            f"১. আমাদের বিকাশ নম্বরে ৳১০ সেন্ডমানি (Send Money) করুন।\n"
+            f"১. আমাদের বিকাশ নম্বরে ৳১০ সেন্যান্ডমানি (Send Money) করুন।\n"
             f"📱 আমাদের বিকাশ নম্বর: `{ADMIN_PAYMENT_NUMBER}`\n\n"
             f"২. টাকা পাঠানোর পর নিচে আপনার **বিকাশ নম্বর** এবং **TrxID (ট্রানজেকশন আইডি)** লিখে সাবমিট করুন।"
         )
-        msg = bot.send_message(user_id, instructions, parse_mode="Markdown")
+        msg = bot.send_message(user_id, instructions, parse_mode="Markdown", reply_markup=get_cancel_markup())
         bot.register_next_step_handler(msg, process_activation_proof)
         
     elif call.data == "proj_gm":
@@ -247,7 +336,8 @@ def callback_query(call):
             f"📧 **জিমেইল সেল প্রজেক্ট (৳১৫)**\n\n"
             f"🔑 আপনার পাসওয়ার্ড অবশ্যই হতে হবে: `{GMAIL_PASSWORD_REQUIRED}`\n\n"
             f"👇 এখন নিচে আপনার বিক্রয়যোগ্য **জিমেইল অ্যাড্রেসটি** টাইপ করে সেন্ড করুন:", 
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=get_cancel_markup()
         )
         bot.register_next_step_handler(msg, process_gmail_step)
         
@@ -269,6 +359,54 @@ def callback_query(call):
             except Exception:
                 pass
         conn.close()
+
+    # [NEW] টার্গেট বোনাস মেনু ও ক্লেইম অপশন হ্যান্ডলার
+    elif call.data == "view_target_bonus":
+        t_data = check_and_update_target(user_id)
+        
+        markup = types.InlineKeyboardMarkup()
+        
+        status_text = ""
+        if t_data["claimed"] == 1:
+            status_text = "✅ আপনি ইতিমধ্যে এই ৩ দিনের বোনাস ক্লেইম করেছেন।"
+            markup.add(types.InlineKeyboardButton("🔒 ইতিমধ্যে ক্লেইমড", callback_data="target_already"))
+        elif t_data["ref_count"] >= 10:
+            status_text = "🎉 অভিনন্দন! আপনার ১০টি একটিভ রেফার পূর্ণ হয়েছে।"
+            markup.add(types.InlineKeyboardButton("💰 ২০ টাকা ক্লেইম করুন", callback_data="claim_target_bonus"))
+        else:
+            status_text = "⏳ টার্গেট এখনো পূরণ হয়নি। ১০টি একটিভ রেফার হলে বাটনটি অন হবে।"
+            markup.add(types.InlineKeyboardButton(f"🔒 অপূর্ণ ({t_data['ref_count']}/10)", callback_data="target_not_yet"))
+            
+        target_msg = (
+            f"🎯 **টার্গেট বোনাস (৩ দিনের চ্যালেঞ্জ)**\n\n"
+            f"📝 **টাস্ক:** ৩ দিনের মধ্যে ১০টি **একটিভ রেফার** করতে পারলে পাবেন এক্সট্রা **৳২০ বোনাস**!\n\n"
+            f"📊 **আপনার বর্তমান অবস্থা:**\n"
+            f"👥 আপনার মেয়াদী একটিভ রেফার: `{t_data['ref_count']}` / ১০ টি\n"
+            f"⏱ সময় বাকি আছে: `{t_data['remaining_days']}` দিন (৩ দিন পর অটোমেটিক সব রিসেট হবে)\n\n"
+            f"📢 **স্ট্যাটাস:** {status_text}"
+        )
+        bot.send_message(user_id, target_msg, parse_mode="Markdown", reply_markup=markup)
+        
+    elif call.data == "claim_target_bonus":
+        t_data = check_and_update_target(user_id)
+        if t_data["claimed"] == 1:
+            bot.answer_callback_query(call.id, "❌ আপনি অলরেডি বোনাসটি নিয়ে নিয়েছেন!", show_alert=True)
+            return
+        if t_data["ref_count"] < 10:
+            bot.answer_callback_query(call.id, "❌ আপনার এখনও ১০টি একটিভ রেফার হয়নি!", show_alert=True)
+            return
+            
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET balance = balance + 20.00, target_claimed = 1 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "🎉 সফলভাবে ২০ টাকা বোনাস ক্লেইম করা হয়েছে!", show_alert=True)
+        bot.send_message(user_id, "🎉 **অসাধারন!** ৩ দিনে ১০টি একটিভ রেফার করার চ্যালেঞ্জ সম্পন্ন করায় আপনার ওয়ালেটে এক্সট্রা **৳২০** যোগ করা হলো।", reply_markup=get_main_menu_markup(user_id))
+
+    elif call.data in ["target_already", "target_not_yet"]:
+        bot.answer_callback_query(call.id, "⚠️ টার্গেট পূরণ হলে এবং ক্লেইম না করা থাকলে বাটনটি সচল হবে।")
         
     elif call.data == "request_withdraw":
         conn = sqlite3.connect('bot_database.db')
@@ -287,10 +425,10 @@ def callback_query(call):
             bot.send_message(user_id, "💳 **পেমেন্ট মেথড নির্বাচন করুন:**", reply_markup=markup)
             
     elif call.data == "w_bkash":
-        msg = bot.send_message(user_id, "📱 **বিকাশ উইথড্র**\n\nআপনার বিকাশ পার্সোনাল নম্বরটি (১১ ডিজিট) টাইপ করে সেন্ড করুন:")
+        msg = bot.send_message(user_id, "📱 **বিকাশ উইথড্র**\n\nআপনার বিকাশ পার্সোনাল নম্বরটি (১১ ডিজিট) টাইপ করেেন্ড করুন:", reply_markup=get_cancel_markup())
         bot.register_next_step_handler(msg, process_withdraw_number)
 
-    # ⚙️ অ্যাডমিন প্যানেল এবং অ্যাক্টিভেশন হ্যান্ডলার (৬৪-বাইট সেফ শর্ট প্রফিক্স 'in_')
+    # ⚙️ অ্যাডমিন প্যানেল এবং অ্যাক্টিভেশন হ্যান্ডলার
     elif call.data == "adm_list" and user_id == ADMIN_ID:
         conn = sqlite3.connect('bot_database.db')
         cursor = conn.cursor()
@@ -331,10 +469,13 @@ def callback_query(call):
             cursor.execute("UPDATE users SET status = 'Active' WHERE user_id = ?", (target_id,))
             referred_by = u_info[1]
             username = u_info[2]
+            
             if referred_by:
-                cursor.execute("UPDATE users SET balance = balance + 5.00 WHERE user_id = ?", (referred_by,))
+                # [NEW CRITICAL UPDATE] রেফারার যখন কাউকে রেফার করবে এবং সে একটিভ হবে, 
+                # তখন ৫ টাকা বোনাস যোগ হওয়ার সাথে সাথে ওই ৩ দিনের চ্যালেঞ্জের রেফার কাউন্ট (+১) বাড়বে।
+                cursor.execute("UPDATE users SET balance = balance + 5.00, target_ref_count = target_ref_count + 1 WHERE user_id = ?", (referred_by,))
                 try:
-                    bot.send_message(referred_by, f"🎉 আপনার রেফারকৃত ইউজার **{username}** অ্যাকাউন্ট একটিভ করায় আপনার ওয়ালেটে ৫ টাকা বোনাস যোগ হয়েছে!")
+                    bot.send_message(referred_by, f"🎉 আপনার রেফারকৃত ইউজার **{username}** অ্যাকাউন্ট একটিভ করায় আপনার ওয়ালেটে ৫ টাকা বোনাস যোগ হয়েছে এবং ৩ দিনের টার্গেটে ১টি রেফার যোগ হয়েছে!")
                 except Exception:
                     pass
             conn.commit()
@@ -348,7 +489,7 @@ def callback_query(call):
             bot.answer_callback_query(call.id, "⚠️ এই অ্যাকাউন্টটি ইতিমধ্যে একটিভ!")
         conn.close()
 
-    # 📥 জিমেইল এপ্রুভ ও রিজেক্ট কলব্যাক হ্যান্ডলার (৬৪-বাইট ক্র্যাশ-প্রুফ অপ্টিমাইজড শর্ট কোড 'ga_' এবং 'gr_')
+    # 📥 জিমেইল এপ্রুভ ও রিজেক্ট কলব্যাক হ্যান্ডলার
     elif (call.data.startswith("ga_") or call.data.startswith("g_ap_")) and user_id == ADMIN_ID:
         order_id = int(call.data.split("_")[-1])
         conn = sqlite3.connect('bot_database.db')
@@ -411,7 +552,11 @@ def process_activation_proof(message):
     user_proof = message.text
     username = message.from_user.first_name
     
-    bot.send_message(user_id, "✅ **আপনার পেমেন্ট তথ্য অ্যাডমিনের কাছে পাঠানো হয়েছে!**\nঅ্যাডমিন ভেরিফাই করে কিছুক্ষণের মধ্যেই আপনার অ্যাকাউন্ট একটিভ করে দেবে।")
+    if is_invalid_input(user_proof):
+        bot.send_message(user_id, "❌ অ্যাক্টিভেশন রিকোয়েস্ট বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
+        return
+
+    bot.send_message(user_id, "✅ **আপনার পেমেন্ট তথ্য অ্যাডমিনের কাছে পাঠানো হয়েছে!**\nঅ্যাডমিন ভেরিফাই করে কিছুক্ষণের মধ্যেই আপনার অ্যাকাউন্ট একটিভ করে দেবে।", reply_markup=get_main_menu_markup(user_id))
     
     markup = types.InlineKeyboardMarkup()
     btn_approve = types.InlineKeyboardButton("✅ Approve (একটিভ করুন)", callback_data=f"ac_{user_id}")
@@ -430,18 +575,30 @@ def process_activation_proof(message):
 def process_withdraw_number(message):
     user_id = message.chat.id
     bkash_num = message.text
-    if len(bkash_num) < 11 or not bkash_num.isdigit():
-        bot.send_message(user_id, "❌ এটি সঠিক মোবাইল নম্বর নয়। আবার উইথড্র অপশনে গিয়ে চেষ্টা করুন।")
+    
+    if is_invalid_input(bkash_num):
+        bot.send_message(user_id, "❌ উইথড্র প্রসেস বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
         return
-    msg = bot.send_message(user_id, f"📱 বিকাশ নম্বর: `{bkash_num}`\n\nকত টাকা উইথড্র করতে চান তা সংখ্যায় লিখুন (যেমন: 80):", parse_mode="Markdown")
+
+    if len(bkash_num) < 11 or not bkash_num.isdigit():
+        bot.send_message(user_id, "❌ এটি সঠিক মোবাইল নম্বর নয়। আবার উইথড্র অপশনে গিয়ে চেষ্টা করুন।", reply_markup=get_main_menu_markup(user_id))
+        return
+        
+    msg = bot.send_message(user_id, f"📱 বিকাশ নম্বর: `{bkash_num}`\n\nকত টাকা উইথড্র করতে চান তা সংখ্যায় লিখুন (যেমন: 80):", parse_mode="Markdown", reply_markup=get_cancel_markup())
     bot.register_next_step_handler(msg, lambda msg: process_withdraw_amount(msg, bkash_num))
 
 def process_withdraw_amount(message, bkash_num):
     user_id = message.chat.id
+    amount_text = message.text
+    
+    if is_invalid_input(amount_text):
+        bot.send_message(user_id, "❌ উইথড্র প্রসেস বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
+        return
+
     try:
-        amount = float(message.text)
+        amount = float(amount_text)
     except ValueError:
-        bot.send_message(user_id, "❌ অনুগ্রহ করে শুধুমাত্র সংখ্যায় পরিমাণটি লিখুন।")
+        bot.send_message(user_id, "❌ অনুগ্রহ করে শুধুমাত্র সংখ্যায় পরিমাণটি লিখুন। আবার চেষ্টা করুন।", reply_markup=get_main_menu_markup(user_id))
         return
         
     conn = sqlite3.connect('bot_database.db')
@@ -450,11 +607,11 @@ def process_withdraw_amount(message, bkash_num):
     balance = cursor.fetchone()[0]
     
     if amount < MIN_WITHDRAW:
-        bot.send_message(user_id, f"❌ মিনিমাম উইথড্র পরিমাণ হলো ৳{MIN_WITHDRAW:.0f} টাকা।")
+        bot.send_message(user_id, f"❌ মিনিমাম উইথড্র পরিমাণ হলো ৳{MIN_WITHDRAW:.0f} টাকা।", reply_markup=get_main_menu_markup(user_id))
         conn.close()
         return
     if amount > balance:
-        bot.send_message(user_id, f"❌ আপনার অ্যাকাউন্টে পর্যাপ্ত ব্যালেন্স নেই। আপনার বর্তমান ব্যালেন্স: ৳{balance:.2f}")
+        bot.send_message(user_id, f"❌ আপনার অ্যাকাউন্টে পর্যাপ্ত ব্যালেন্স নেই। আপনার বর্তমান ব্যালেন্স: ৳{balance:.2f}", reply_markup=get_main_menu_markup(user_id))
         conn.close()
         return
         
@@ -462,8 +619,7 @@ def process_withdraw_amount(message, bkash_num):
     conn.commit()
     conn.close()
     
-    # [NEW UPDATE] উইথড্র করার পর ইউজারের জন্য সাকসেস মেসেজ
-    bot.send_message(user_id, "ধন্যবাদ আপনার উইথড্র সফল হয়েছে। ২৪ ঘন্টার মধ্যে আপনার একাউন্টে পৌছে যাবে।")
+    bot.send_message(user_id, "ধন্যবাদ আপনার উইথড্র সফল হয়েছে। ২৪ ঘন্টার মধ্যে আপনার একাউন্টে পৌছে যাবে।", reply_markup=get_main_menu_markup(user_id))
     
     notification = (
         f"🚨 **নতুন উইথড্র রিকোয়েস্ট এসেছে!** 🚨\n\n"
@@ -479,15 +635,25 @@ def process_withdraw_amount(message, bkash_num):
 def process_gmail_step(message):
     user_id = message.chat.id
     gmail_input = message.text
-    if "@" not in gmail_input or "." not in gmail_input:
-        bot.send_message(user_id, "❌ এটি কোনো বৈধ জিমেইল নয়। অনুগ্রহ করে পুনরায় জিমেইল সেলে গিয়ে সঠিক জিমেইল দিন।")
+    
+    if is_invalid_input(gmail_input):
+        bot.send_message(user_id, "❌ জিমেইল সেল বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
         return
-    msg = bot.send_message(user_id, f"🔐 জিমেইল: `{gmail_input}`\n\nএবার নিচে বটের সেই ফিক্সড পাসওয়ার্ডটি (`{GMAIL_PASSWORD_REQUIRED}`) টাইপ করে কনফার্ম করুন:", parse_mode="Markdown")
+
+    if "@" not in gmail_input or "." not in gmail_input:
+        bot.send_message(user_id, "❌ এটি কোনো বৈধ জিমেইল নয়। অনুগ্রহ করে পুনরায় জিমেইল সেলে গিয়ে সঠিক জিমেইল দিন।", reply_markup=get_main_menu_markup(user_id))
+        return
+        
+    msg = bot.send_message(user_id, f"🔐 জিমেইল: `{gmail_input}`\n\nএবার নিচে বটের সেই ফিক্সড পাসওয়ার্ডটি (`{GMAIL_PASSWORD_REQUIRED}`) টাইপ করে কনফার্ম করুন:", parse_mode="Markdown", reply_markup=get_cancel_markup())
     bot.register_next_step_handler(msg, lambda msg: process_password_step(msg, gmail_input))
 
 def process_password_step(message, gmail_input):
     user_id = message.chat.id
     password_input = message.text
+    
+    if is_invalid_input(password_input):
+        bot.send_message(user_id, "❌ জিমেইল সেল বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
+        return
     
     if password_input == GMAIL_PASSWORD_REQUIRED:
         conn = sqlite3.connect('bot_database.db')
@@ -498,8 +664,7 @@ def process_password_step(message, gmail_input):
         conn.commit()
         conn.close()
         
-        # [NEW UPDATE] জিমেইল সাবমিট করার পর ইউজারের জন্য সাকসেস মেসেজ
-        bot.send_message(user_id, "ধন্যবাদ আপনার জিমেইল সব কিছু ঠিক থাকলে ১২ ঘন্টার মধ্যে চেক করে এপ্রুভ করা হবে।")
+        bot.send_message(user_id, "ধন্যবাদ আপনার জিমেইল সব কিছু ঠিক থাকলে ১২ ঘন্টার মধ্যে চেক করে এপ্রুভ করা হবে।", reply_markup=get_main_menu_markup(user_id))
         
         markup = types.InlineKeyboardMarkup()
         btn_approve = types.InlineKeyboardButton("✅ Approve", callback_data=f"ga_{order_id}")
@@ -515,11 +680,9 @@ def process_password_step(message, gmail_input):
         )
         bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown", reply_markup=markup)
     else:
-        bot.send_message(user_id, f"❌ **ভুল পাসওয়ার্ড!** জিমেইল সেল বাতিল করা হয়েছে।")
+        bot.send_message(user_id, f"❌ **ভুল পাসওয়ার্ড!** জিমেইল সেল বাতিল করা হয়েছে।", reply_markup=get_main_menu_markup(user_id))
 
-# হুল বাটন ও ক্র্যাশ প্রুফ লুপ এবং ব্যাকগ্রাউন্ড সার্ভার ইনিশিয়েট
 if __name__ == "__main__":
-    # ব্যাকগ্রাউন্ড থ্রেডে ফ্লাস্ক ওয়েব সার্ভার চালু করা (২৪ ঘণ্টা ফ্রিতে সচল রাখার ম্যাজিক ট্রিক)
     server_thread = Thread(target=run_web_server)
     server_thread.daemon = True
     server_thread.start()
