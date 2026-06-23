@@ -16,9 +16,9 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "বট সফলভাবে সচল আছে!"
+    return "বট সফলভাবে ২৪ ঘণ্টা সচল আছে!"
 
-def run_flask():
+def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -204,7 +204,7 @@ def handle_messages(message):
         if last_daily == today_str:
             daily_status = "❌ আজকে অলরেডি ক্লেইম করেছেন!"
         else:
-            daily_status = "✅ ক্লেইম করার জন্য রেডি!"
+            daily_status = "✅ ক্লেইম করার জন্য রেদি!"
             
         start_date = datetime.date.fromisoformat(start_date_str)
         days_passed = (datetime.date.today() - start_date).days
@@ -330,7 +330,7 @@ def handle_messages(message):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📧 পেন্ডিং জিমেইল লিস্ট", callback_data="admin_pending_gmail"))
         markup.add(types.InlineKeyboardButton("💸 পেন্ডিং উইথড্র লিস্ট", callback_data="admin_pending_withdraw"))
-        bot.send_message(admin_id, admin_msg, reply_markup=markup)
+        bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup)
         
     else:
         bot.send_message(user_id, "❌ আমি দুঃখিত, ইনপুটটি বুঝতে পারিনি। দয়া করে নিচের বাটনগুলো ব্যবহার করুন।", reply_markup=get_main_menu_markup(user_id))
@@ -408,7 +408,7 @@ def handle_callbacks(call):
         del user_ad_sessions[user_id]
         
         bot.answer_callback_query(call.id, f"🎉 ভেরিফিকেশন সফল! ৳{AD_REWARD:.2f} আপনার ব্যালেন্সে যোগ হয়েছে।", show_alert=True)
-        bot.edit_message_text(f"✅ অ্যাড دیکھا সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+        bot.edit_message_text(f"✅ অ্যাড দেখা সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
 
     elif call.data == "submit_gmail":
         msg = bot.send_message(user_id, "📧 আপনার ফ্রেশ জিমেইলটি টাইপ করে পাঠান:\n\n(অথবা বাতিল করতে নিচের বাটন চাপুন)", reply_markup=get_cancel_markup())
@@ -494,6 +494,7 @@ def process_password_input(message, gmail):
         
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect('bot_database.db')
+    conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
     cursor.execute("INSERT INTO gmail_submissions (user_id, gmail, password, status, submitted_at) VALUES (?, ?, ?, ?, ?)",
                    (user_id, gmail, actual_password, "pending", now))
@@ -639,7 +640,7 @@ def manage_gmail(sub_id, action, msg_id):
             conn.commit()
             bot.edit_message_text(f"❌ জিমেইল ({g_mail}) রিজেক্ট করা হয়েছে।", chat_id=ADMIN_ID, message_id=msg_id)
             try:
-                bot.send_message(u_id, f"❌ দুঃখিত! আপনার সাবমিট করা জিমেইলটি ({g_mail}) সঠিক না হওয়ায় অ্যাডমিন সেটি রিজেক্ট করেছে। দয়া করে সঠিক জিমেইল সাবমিট করুন।")
+                bot.send_message(u_id, f"❌ দুঃখিত! আপনার সাবমিট করা জিমেইলটি ({g_mail}) সঠিক না থাকায় অ্যাডমিন সেটি রিজেক্ট করেছে। দয়া করে সঠিক জিমেইল সাবমিট করুন।")
             except:
                 pass
     conn.close()
@@ -661,4 +662,35 @@ def manage_withdraw(req_id, action, msg_id):
             except:
                 pass
         else:
-            cursor.execute("UPDATE withdraw_requests SET status = 'rejected' WHERE id = ?", (req
+            cursor.execute("UPDATE withdraw_requests SET status = 'rejected' WHERE id = ?", (req_id,))
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amt, u_id))
+            conn.commit()
+            bot.edit_message_text(f"❌ {method} রিকোয়েস্ট (৳{amt:.2f} -> {num}) রিজেক্ট করা হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।", chat_id=ADMIN_ID, message_id=msg_id)
+            try:
+                bot.send_message(u_id, f"❌ দুঃখিত! আপনার ৳{amt:.2f} উইথড্র রিকোয়েস্টটি রিজেক্ট করা হয়েছে এবং কেটে নেওয়া টাকা আপনার ওয়ালেটে ফেরত দেওয়া হয়েছে। যোগাযোগের জন্য অ্যাডমিনকে নক দিন।")
+            except:
+                pass
+    conn.close()
+
+if __name__ == "__main__":
+    init_db()
+    
+    flask_thread = Thread(target=run_web_server)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    print("টেলিগ্রাম সার্ভার জ্যাম মুক্ত করা হচ্ছে...")
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        print(f"Webhook সরাতে সমস্যা: {e}")
+        
+    time.sleep(2)
+    
+    print("বট সফলভাবে পোলিং মোডে চালু হয়েছে!")
+    while True:
+        try:
+            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            print(f"ত্রুটি ঘটেছে, ২ সেকেন্ড পর আবার চেষ্টা করা হচ্ছে: {e}")
+            time.sleep(2)
