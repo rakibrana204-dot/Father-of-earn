@@ -3,8 +3,9 @@ from telebot import types
 import datetime
 import sqlite3
 import time
+import os
 from threading import Thread
-from flask import Flask # ২৪ ঘণ্টা ফ্রিতে সচল রাখার জন্য ওয়েব সার্ভার
+from flask import Flask 
 
 # ফ্লাস্ক অ্যাপ তৈরি (Render/Koyeb বা UptimeRobot দিয়ে ২৪ ঘণ্টা সচল রাখার জন্য)
 app = Flask('')
@@ -16,9 +17,8 @@ def home():
 def run_web_server():
     app.run(host='0.0.0.0', port=8080)
 
-# বটের আসল টোকেন
+# রেন্ডারের Environment Variable থেকে সঠিক বানানে টোকেন রিড করা হচ্ছে
 TOKEN = os.getenv('TELEGRAM_TOKEN')
-
 bot = telebot.TeleBot(TOKEN)
 
 BOT_LAUNCH_DATE = datetime.datetime(2026, 6, 22)
@@ -33,7 +33,7 @@ MIN_WITHDRAW = 80.00
 
 # মনিট্যাগ অ্যাড কনফিগারেশন
 AD_LINK = "https://omg10.com/4/11190574"
-AD_REWARD = 1.00 # এখানে প্রতি অ্যাডের রিওয়ার্ড ১ টাকা করে দেওয়া হলো
+AD_REWARD = 1.00 
 DAILY_AD_LIMIT = 5
 
 # মেইন মেনু কিবোর্ড জেনারেটর ফাংশন
@@ -70,7 +70,6 @@ def is_invalid_input(text):
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
-    # ইউজার টেবিল (পুরনো ডেটা সম্পূর্ণ সুরক্ষিত থাকবে, নতুন কলামগুলো অটোমেটিক যোগ হবে)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -87,7 +86,6 @@ def init_db():
         )
     ''')
     
-    # নতুন অ্যাড ট্র্যাকিং কলামগুলো ডেটাবেজে যোগ করা (যদি আগে না থাকে)
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN last_ad_date TEXT")
     except sqlite3.OperationalError:
@@ -97,7 +95,6 @@ def init_db():
     except sqlite3.OperationalError:
         pass
         
-    # জিমেইল ট্র্যাকিং টেবিল
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS gmail_submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,7 +105,6 @@ def init_db():
             submitted_at TEXT
         )
     ''')
-    # উইথড্র ট্র্যাকিং টেবিল
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS withdraw_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,7 +119,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ব্যবহারকারী ডেটাবেজে আছে কিনা তা নিশ্চিত করা এবং নতুন কলাম হ্যান্ডেল করা
 def check_user(user_id, name=None, referred_by=None):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -137,7 +132,6 @@ def check_user(user_id, name=None, referred_by=None):
                        (user_id, name if name else "User", 0.0, "active", referred_by, today_str, 0, 0, today_str, 0))
         conn.commit()
         
-        # রেফারেল বোনাস প্রদান
         if referred_by and referred_by != user_id:
             cursor.execute("UPDATE users SET balance = balance + 5.0 WHERE user_id = ?", (referred_by,))
             cursor.execute("SELECT target_start_date, target_claimed FROM users WHERE user_id = ?", (referred_by,))
@@ -154,7 +148,6 @@ def check_user(user_id, name=None, referred_by=None):
             except:
                 pass
     else:
-        # যদি অ্যাকাউন্ট থাকে কিন্তু ডেট পরিবর্তন হয় তবে ডেইলি অ্যাড কাউন্ট ০ করে দেওয়া
         last_ad_date = user[3]
         if last_ad_date != today_str:
             cursor.execute("UPDATE users SET last_ad_date = ?, daily_ad_count = 0 WHERE user_id = ?", (today_str, user_id))
@@ -162,13 +155,11 @@ def check_user(user_id, name=None, referred_by=None):
             
     conn.close()
 
-# /start কমান্ড হ্যান্ডলার
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
     name = message.from_user.first_name
     
-    # রেফারেল চেক
     referred_by = None
     parts = message.text.split()
     if len(parts) > 1:
@@ -186,10 +177,8 @@ def send_welcome(message):
     )
     bot.send_message(user_id, welcome_text, reply_markup=get_main_menu_markup(user_id))
 
-# ইউজারদের সাময়িক অ্যাড ট্র্যাকিং সেশন (১৫ সেকেন্ড টাইমার মেইনটেইন করার জন্য)
 user_ad_sessions = {}
 
-# মেসেজ হ্যান্ডলার (বাটন ও টেক্সট কন্ট্রোল)
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     user_id = message.from_user.id
@@ -211,13 +200,11 @@ def handle_messages(message):
         ref_count = res[2] if res[2] else 0
         claimed = res[3] if res[3] else 0
         
-        # ডেইলি সাধারণ বোনাস চেক
         if last_daily == today_str:
             daily_status = "❌ আজকে অলরেডি ক্লেইম করেছেন!"
         else:
             daily_status = "✅ ক্লেইম করার জন্য রেডি!"
             
-        # টার্গেট বোনাস প্রসেস (৩ দিনে ১০ রেফার)
         start_date = datetime.date.fromisoformat(start_date_str)
         days_passed = (datetime.date.today() - start_date).days
         days_left = 3 - days_passed
@@ -270,7 +257,6 @@ def handle_messages(message):
             bot.send_message(user_id, f"❌ দুঃখিত! আপনার আজকের অ্যাড দেখার লিমিট শেষ। আগামীকাল আবার {DAILY_AD_LIMIT}টি অ্যাড দেখতে পারবেন।")
             return
             
-        # সেশন টাইম রেকর্ড করা
         user_ad_sessions[user_id] = time.time()
         
         markup = types.InlineKeyboardMarkup()
@@ -348,7 +334,6 @@ def handle_messages(message):
     else:
         bot.send_message(user_id, "❌ আমি দুঃখিত, ইনপুটটি বুঝতে পারিনি। দয়া করে নিচের বাটনগুলো ব্যবহার করুন।", reply_markup=get_main_menu_markup(user_id))
 
-# কলব্যাক কোয়েরি হ্যান্ডলার (ইনলাইন বাটন অ্যাকশন)
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user_id = call.from_user.id
@@ -405,7 +390,6 @@ def handle_callbacks(call):
             bot.answer_callback_query(call.id, f"🛑 জলদি করবেন না! বোনাস পেতে অ্যাডটি আরও {remaining} সেকেন্ড স্ক্রোল করুন।", show_alert=True)
             return
             
-        # ভেরিফিকেশন সফল হলে বোনাস প্রদান
         conn = sqlite3.connect('bot_database.db')
         cursor = conn.cursor()
         cursor.execute("SELECT daily_ad_count FROM users WHERE user_id = ?", (user_id,))
@@ -420,11 +404,10 @@ def handle_callbacks(call):
         conn.commit()
         conn.close()
         
-        # সেশন রিমুভ করা
         del user_ad_sessions[user_id]
         
         bot.answer_callback_query(call.id, f"🎉 ভেরিফিকেশন সফল! ৳{AD_REWARD:.2f} আপনার ব্যালেন্সে যোগ হয়েছে।", show_alert=True)
-        bot.edit_message_text(f"✅ অ্যাড দেখা সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+        bot.edit_message_text(f"✅ অ্যাড دیکھا সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
 
     elif call.data == "submit_gmail":
         msg = bot.send_message(user_id, "📧 আপনার ফ্রেশ জিমেইলটি টাইপ করে পাঠান:\n\n(অথবা বাতিল করতে নিচের বাটন চাপুন)", reply_markup=get_cancel_markup())
@@ -450,7 +433,6 @@ def handle_callbacks(call):
         msg = bot.send_message(user_id, f"🔢 আপনার {method} পার্সোনাল নাম্বারটি টাইপ করুন:\n\n(অথবা বাতিল করতে নিচের বাটন চাপুন)", reply_markup=get_cancel_markup())
         bot.register_next_step_handler(msg, process_withdraw_number, method)
         
-    # অ্যাডমিন প্যানেল অ্যাকশনসমূহ
     elif call.data == "admin_pending_gmail" and user_id == ADMIN_ID:
         show_admin_gmail_list(user_id)
     elif call.data == "admin_pending_withdraw" and user_id == ADMIN_ID:
@@ -468,7 +450,6 @@ def handle_callbacks(call):
         req_id = int(call.data.split("_")[2])
         manage_withdraw(req_id, "rejected", call.message.message_id)
 
-# জিমেইল সাবমিশন প্রসেস
 def process_gmail_input(message):
     user_id = message.from_user.id
     gmail = message.text
@@ -524,7 +505,6 @@ def process_password_input(message, gmail):
     except:
         pass
 
-# উইথড্র প্রসেস
 def process_withdraw_number(message, method):
     user_id = message.from_user.id
     number = message.text
@@ -574,7 +554,7 @@ def process_withdraw_amount(message, method, number, balance):
         return
         
     if amount > balance:
-        msg = bot.send_message(user_id, f"❌ পর্যাপ্ত ব্যালেন্স নেই! আপনার একাউন্টে আছে ৳{balance:.2f}। আবার সঠিক অ্যামাউন্ট লিখুন:", reply_markup=get_cancel_markup())
+        msg = bot.send_message(user_id, f"❌ পর্যাপ্ত ব্যালেন্স নেই! আপনার একাউনটি আছে ৳{balance:.2f}। আবার সঠিক অ্যামাউন্ট লিখুন:", reply_markup=get_cancel_markup())
         bot.register_next_step_handler(msg, process_withdraw_amount, method, number, balance)
         return
         
@@ -582,7 +562,6 @@ def process_withdraw_amount(message, method, number, balance):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
     
-    # ব্যালেন্স কাটা এবং রিকোয়েস্ট সেভ করা
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
     cursor.execute("INSERT INTO withdraw_requests (user_id, method, number, amount, status, requested_at) VALUES (?, ?, ?, ?, ?, ?)",
                    (user_id, method, number, amount, "pending", now))
@@ -595,7 +574,6 @@ def process_withdraw_amount(message, method, number, balance):
     except:
         pass
 
-# অ্যাডমিন প্যানেল ইন্টারনাল ফাংশনসমূহ
 def show_admin_gmail_list(admin_id):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -692,7 +670,6 @@ def manage_withdraw(req_id, action, msg_id):
                 pass
     conn.close()
 
-# ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে রান করানো
 def run_bot():
     init_db()
     while True:
