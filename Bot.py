@@ -4,18 +4,10 @@ import datetime
 import sqlite3
 import time
 import os
-from threading import Thread
-from flask import Flask 
+from flask import Flask, request
 
-# ফ্লাস্ক অ্যাপ তৈরি (Render/Koyeb বা UptimeRobot দিয়ে ২৪ ঘণ্টা সচল রাখার জন্য)
+# ফ্লাস্ক অ্যাপ তৈরি
 app = Flask('')
-
-@app.route('/')
-def home():
-    return "বট সফলভাবে ২৪ ঘণ্টা সচল আছে!"
-
-def run_web_server():
-    app.run(host='0.0.0.0', port=8080)
 
 # রেন্ডারের Environment Variable থেকে সঠিক বানানে টোকেন রিড করা হচ্ছে
 TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -35,6 +27,18 @@ MIN_WITHDRAW = 80.00
 AD_LINK = "https://omg10.com/4/11190574"
 AD_REWARD = 1.00 
 DAILY_AD_LIMIT = 5
+
+# Webhook রুট - যেখানে টেলিগ্রাম মেসেজ পাঠাবে
+@app.route('/' + TOKEN, methods=['POST'])
+def getMessage():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route('/')
+def home():
+    return "বট সফলভাবে Webhook এর মাধ্যমে ২৪ ঘণ্টা সচল আছে!"
 
 # মেইন মেনু কিবোর্ড জেনারেটর ফাংশন
 def get_main_menu_markup(user_id):
@@ -407,7 +411,7 @@ def handle_callbacks(call):
         del user_ad_sessions[user_id]
         
         bot.answer_callback_query(call.id, f"🎉 ভেরিফিকেশন সফল! ৳{AD_REWARD:.2f} আপনার ব্যালেন্সে যোগ হয়েছে।", show_alert=True)
-        bot.edit_message_text(f"✅ অ্যাড دیکھا সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+        bot.edit_message_text(f"✅ অ্যাড দেখা সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
 
     elif call.data == "submit_gmail":
         msg = bot.send_message(user_id, "📧 আপনার ফ্রেশ জিমেইলটি টাইপ করে পাঠান:\n\n(অথবা বাতিল করতে নিচের বাটন চাপুন)", reply_markup=get_cancel_markup())
@@ -654,7 +658,7 @@ def manage_withdraw(req_id, action, msg_id):
         if action == "approved":
             cursor.execute("UPDATE withdraw_requests SET status = 'approved' WHERE id = ?", (req_id,))
             conn.commit()
-            bot.edit_message_text(f"✅ {method} রিকোয়েস্ট (৳{amt:.2f} -> {num}) পেইড হিসেবে মার্ক করা হয়েছে।", chat_id=ADMIN_ID, message_id=msg_id)
+            bot.edit_message_text(f"✅ {method} রিকোয়েস্ট (৳{amt:.2f} -> {num}) পেইড হিসেবেমার্ক করা হয়েছে।", chat_id=ADMIN_ID, message_id=msg_id)
             try:
                 bot.send_message(u_id, f"💸 অভিনন্দন! আপনার ৳{amt:.2f} উইথড্র রিকোয়েস্টটি সফলভাবে সম্পূর্ণ হয়েছে এবং আপনার {method} নাম্বারে টাকা পাঠিয়ে দেওয়া হয়েছে।")
             except:
@@ -670,15 +674,16 @@ def manage_withdraw(req_id, action, msg_id):
                 pass
     conn.close()
 
-def run_bot():
-    init_db()
-    while True:
-        try:
-            bot.polling(none_stop=True)
-        except Exception as e:
-            time.sleep(3)
-
 if __name__ == "__main__":
-    t = Thread(target=run_web_server)
-    t.start()
-    run_bot()
+    init_db()
+    
+    # রেন্ডার লাইভ হওয়ার পর অটোমেটিক রেন্ডারের লিংকের সাথে Webhook সেটআপ করে দেবে
+    bot.remove_webhook()
+    time.sleep(1)
+    
+    # আপনার রেন্ডার অ্যাপের ডোমেন লিংক এখানে দেওয়া হলো
+    RENDER_APP_URL = "https://father-of-earn.onrender.com/"
+    bot.set_webhook(url=RENDER_APP_URL + TOKEN)
+    
+    # ফ্লাস্ক সার্ভার চালু হচ্ছে (রেন্ডার পোর্ট ৮MD০ রিড করবে)
+    app.run(host='0.0.0.0', port=8080)
