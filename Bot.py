@@ -4,14 +4,23 @@ import datetime
 import sqlite3
 import time
 import os
-from flask import Flask, request
+from flask import Flask
+from threading import Thread
 
-# ফ্লাস্ক অ্যাপ তৈরি
-app = Flask('')
-
-# রেন্ডারের Environment Variable থেকে সঠিক বানানে টোকেন রিড করা হচ্ছে
+# রেন্ডারের Environment Variable থেকে নিরাপদভাবে টোকেন রিড করা হচ্ছে
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 bot = telebot.TeleBot(TOKEN)
+
+# ফ্লাস্ক অ্যাপ তৈরি (রেন্ডারকে লাইভ রাখার জন্য)
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "বট সফলভাবে সচল আছে!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 BOT_LAUNCH_DATE = datetime.datetime(2026, 6, 22)
 
@@ -27,18 +36,6 @@ MIN_WITHDRAW = 80.00
 AD_LINK = "https://omg10.com/4/11190574"
 AD_REWARD = 1.00 
 DAILY_AD_LIMIT = 5
-
-# Webhook রুট - যেখানে টেলিগ্রাম মেসেজ পাঠাবে
-@app.route('/' + TOKEN, methods=['POST'])
-def getMessage():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "!", 200
-
-@app.route('/')
-def home():
-    return "বট সফলভাবে Webhook এর মাধ্যমে ২৪ ঘণ্টা সচল আছে!"
 
 # মেইন মেনু কিবোর্ড জেনারেটর ফাংশন
 def get_main_menu_markup(user_id):
@@ -333,7 +330,7 @@ def handle_messages(message):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📧 পেন্ডিং জিমেইল লিস্ট", callback_data="admin_pending_gmail"))
         markup.add(types.InlineKeyboardButton("💸 পেন্ডিং উইথড্র লিস্ট", callback_data="admin_pending_withdraw"))
-        bot.send_message(user_id, admin_msg, reply_markup=markup)
+        bot.send_message(admin_id, admin_msg, reply_markup=markup)
         
     else:
         bot.send_message(user_id, "❌ আমি দুঃখিত, ইনপুটটি বুঝতে পারিনি। দয়া করে নিচের বাটনগুলো ব্যবহার করুন।", reply_markup=get_main_menu_markup(user_id))
@@ -411,7 +408,7 @@ def handle_callbacks(call):
         del user_ad_sessions[user_id]
         
         bot.answer_callback_query(call.id, f"🎉 ভেরিফিকেশন সফল! ৳{AD_REWARD:.2f} আপনার ব্যালেন্সে যোগ হয়েছে।", show_alert=True)
-        bot.edit_message_text(f"✅ অ্যাড দেখা সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
+        bot.edit_message_text(f"✅ অ্যাড دیکھا সফল হয়েছে! আপনার একাউন্টে ৳{AD_REWARD:.2f} যোগ করা হয়েছে।", chat_id=user_id, message_id=call.message.message_id)
 
     elif call.data == "submit_gmail":
         msg = bot.send_message(user_id, "📧 আপনার ফ্রেশ জিমেইলটি টাইপ করে পাঠান:\n\n(অথবা বাতিল করতে নিচের বাটন চাপুন)", reply_markup=get_cancel_markup())
@@ -664,26 +661,4 @@ def manage_withdraw(req_id, action, msg_id):
             except:
                 pass
         else:
-            cursor.execute("UPDATE withdraw_requests SET status = 'rejected' WHERE id = ?", (req_id,))
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amt, u_id))
-            conn.commit()
-            bot.edit_message_text(f"❌ {method} রিকোয়েস্ট (৳{amt:.2f} -> {num}) রিজেক্ট করা হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।", chat_id=ADMIN_ID, message_id=msg_id)
-            try:
-                bot.send_message(u_id, f"❌ দুঃখিত! আপনার ৳{amt:.2f} উইথড্র রিকোয়েস্টটি রিজেক্ট করা হয়েছে এবং কেটে নেওয়া টাকা আপনার ওয়ালেটে ফেরত দেওয়া হয়েছে। যোগাযোগের জন্য অ্যাডমিনকে নক দিন।")
-            except:
-                pass
-    conn.close()
-
-if __name__ == "__main__":
-    init_db()
-    
-    # রেন্ডার লাইভ হওয়ার পর অটোমেটিক রেন্ডারের লিংকের সাথে Webhook সেটআপ করে দেবে
-    bot.remove_webhook()
-    time.sleep(1)
-    
-    # আপনার রেন্ডার অ্যাপের ডোমেন লিংক এখানে দেওয়া হলো
-    RENDER_APP_URL = "https://father-of-earn.onrender.com/"
-    bot.set_webhook(url=RENDER_APP_URL + TOKEN)
-    
-    # ফ্লাস্ক সার্ভার চালু হচ্ছে (রেন্ডার পোর্ট ৮MD০ রিড করবে)
-    app.run(host='0.0.0.0', port=8080)
+            cursor.execute("UPDATE withdraw_requests SET status = 'rejected' WHERE id = ?", (req
