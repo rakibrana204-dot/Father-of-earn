@@ -17,7 +17,8 @@ def run_web_server():
     app.run(host='0.0.0.0', port=8080)
 
 # বটের আসল টোকেন
-TOKEN = '8857286121:AAG3KVUNLk76cmTGaXcZhOzX077bhkbwVAM'
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+
 bot = telebot.TeleBot(TOKEN)
 
 BOT_LAUNCH_DATE = datetime.datetime(2026, 6, 22)
